@@ -128,7 +128,7 @@ func (s *Store) Get(key string) (string, bool) {
 		return val, true
 	}
 	// check frozen table
-	if val, isTomb, found := checkTable(s.frozenMap, ket); found {
+	if val, isTomb, found := checkTable(s.frozenMap, key); found {
 		if isTomb {
 			return "", false
 		}
