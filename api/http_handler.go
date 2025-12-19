@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"KV-Store/kv"
@@ -11,14 +11,14 @@ type Server struct {
 }
 
 func NewServer() *Server {
-	newStore, err := kv.NewKVStore("logs")
+	newStore, err := kv.NewKVStore()
 	if err != nil {
 		panic(err)
 	}
 	return &Server{store: newStore}
 }
 
-func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
+func (s *Server) HandlePut(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	val := r.URL.Query().Get("val")
 
@@ -37,7 +37,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
-func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
+func (s *Server) HandleGet(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		http.Error(w, "No key found", http.StatusBadRequest)
@@ -57,7 +57,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+func (s *Server) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		http.Error(w, "No key found", http.StatusBadRequest)

@@ -17,7 +17,7 @@ type Arena struct {
 
 func NewArena(size int) *Arena {
 	return &Arena{
-		data:   make([]byte, size),
+		data:   make([]byte, 0, size),
 		offset: 0,
 	}
 }
@@ -38,7 +38,7 @@ func (a *Arena) Put(key string, val string, isDelete bool) (int, error) {
 
 	var lenBuff [6]byte
 	binary.LittleEndian.PutUint16(lenBuff[0:2], uint16(len(key)))
-	binary.LittleEndian.PutUint32(lenBuff[2:4], uint32(len(val)))
+	binary.LittleEndian.PutUint32(lenBuff[2:6], uint32(len(val)))
 
 	a.data = append(a.data, header)
 	a.data = append(a.data, lenBuff[:]...)

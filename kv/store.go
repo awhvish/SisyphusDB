@@ -1,8 +1,10 @@
 package kv
 
 import (
-	"KV-Store/arena"
-	"KV-Store/wal"
+	"KV-Store/pkg/arena"
+	"KV-Store/pkg/wal"
+	"KV-Store/sstable"
+	sstable2 "KV-Store/sstable"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const mapLimit = 10 * 1024 // 10KB for now
@@ -32,7 +35,7 @@ func NewMemTable(size int, newWal *wal.WAL) *MemTable {
 type Store struct {
 	activeMap *MemTable
 	frozenMap *MemTable
-	ssTables  []*SSTableReader
+	ssTables  []*sstable2.Reader
 	walDir    string
 	sstDir    string
 	walSeq    int64
@@ -40,9 +43,9 @@ type Store struct {
 	mu        sync.RWMutex
 }
 
-func NewKVStore(dir string) (*Store, error) {
-	walDir := filepath.Join(dir, "wal")
-	sstDir := filepath.Join(dir, "data")
+func NewKVStore() (*Store, error) {
+	walDir := filepath.Join("wal")
+	sstDir := filepath.Join("data")
 
 	// 2. Create them if they don't exist
 	if err := os.MkdirAll(walDir, 0755); err != nil {
@@ -87,6 +90,49 @@ func NewKVStore(dir string) (*Store, error) {
 	return store, nil
 }
 
+func CreateSSTable(frozenMem *MemTable, sstDir string, level int) error { // Added walDir arg for cleaner path handling
+	// sort
+	keys := make([]string, 0, len(frozenMem.Index))
+	for k := range frozenMem.Index {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	filename := fmt.Sprintf("%s/L%d_%d.sst", sstDir, level, time.Now().UnixNano()) // Use walDir path
+	builder, err := sstable.NewBuilder(filename, len(keys))
+	if err != nil {
+		return fmt.Errorf("failed to create sstable file: %w", err)
+	}
+
+	// add to builder
+	for _, k := range keys {
+		offset := frozenMem.Index[k]
+		val, isTombstone, _ := frozenMem.Arena.Get(offset)
+
+		// Convert string to []byte for the Builder
+		err := builder.Add([]byte(k), val, isTombstone)
+		if err != nil {
+			// If write fails, we should probably close and delete the corrupt file
+			_ = builder.File.Close()
+			_ = os.Remove(filename)
+			return fmt.Errorf("failed to add key to sstable: %w", err)
+		}
+	}
+
+	if err := builder.Close(); err != nil {
+		return fmt.Errorf("failed to close sstable: %w", err)
+	}
+
+	// 5. delete wal
+	if frozenMem.Wal != nil {
+		if err := frozenMem.Wal.Remove(); err != nil {
+			fmt.Printf("Warning: failed to delete old WAL: %v\n", err)
+		}
+	}
+
+	return nil
+}
+
 func (s *Store) FlushWorker() {
 
 	for range s.flushChan {
@@ -96,14 +142,19 @@ func (s *Store) FlushWorker() {
 		if frozenMem == nil || frozenMem.size == 0 {
 			continue
 		}
-		err := createSSTable(frozenMem, s.sstDir)
+		err := CreateSSTable(frozenMem, s.sstDir, 0)
 		if err != nil {
 			fmt.Printf("Failed to create SSTable %s: %s\n", s.walDir, err)
 			continue
 		}
 		s.mu.Lock()
 		s.frozenMap = nil
+		if s.activeMap.Wal != nil {
+			_ = s.activeMap.Wal.Remove() // Clean up old WAL
+		}
 		s.mu.Unlock()
+		s.refreshSSTables()
+		_ = s.CheckAndCompact(0)
 	}
 }
 
@@ -203,7 +254,7 @@ func (s *Store) Get(key string) (string, bool) {
 	for _, file := range sstFiles {
 		// Open the reader
 		fullPath := filepath.Join(s.sstDir, file)
-		reader, err := OpenSSTable(fullPath)
+		reader, err := sstable2.OpenSSTable(fullPath)
 		if err != nil {
 			continue // Skip bad files
 		}

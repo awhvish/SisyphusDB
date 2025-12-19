@@ -9,12 +9,21 @@ type BloomFilter struct {
 }
 
 func New(n int) *BloomFilter {
-	m := uint(n * 10) // 10 bits per array giving ~1% false positive rte
-	k := uint(7)      // optimal
-	bytesSize := (m + 7) / 8
+	if n < 1 {
+		n = 1
+	}
+	// 1. Calculate needed bits (10 bits per key)
+	neededBits := uint(n * 10)
+
+	// 2. Round up to nearest byte (8 bits)
+	// This ensures m is always a multiple of 8
+	bytesNeeded := (neededBits + 7) / 8
+	m := bytesNeeded * 8
+
+	k := uint(7)
 
 	return &BloomFilter{
-		bitset: make([]byte, bytesSize),
+		bitset: make([]byte, bytesNeeded),
 		k:      k,
 		m:      m,
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"KV-Store/api"
 	"fmt"
 	"net/http"
 )
@@ -10,11 +11,11 @@ const PORT = ":8080"
 func main() {
 	mux := http.NewServeMux()
 
-	server := NewServer()
+	server := api.NewServer()
 
-	mux.HandleFunc("PUT /put", server.handlePut)
-	mux.HandleFunc("GET /get", server.handleGet)
-	mux.HandleFunc("DELETE /delete", server.handleDelete)
+	mux.HandleFunc("PUT /put", server.HandlePut)
+	mux.HandleFunc("GET /get", server.HandleGet)
+	mux.HandleFunc("DELETE /delete", server.HandleDelete)
 
 	fmt.Println("Server is running on port: ", PORT)
 

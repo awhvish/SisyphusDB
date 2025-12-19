@@ -1,12 +1,9 @@
-package kv
+package sstable
 
 import (
-	"KV-Store/bloom"
+	"KV-Store/pkg/bloom"
 	"encoding/binary"
-	"fmt"
 	"os"
-	"sort"
-	"time"
 )
 
 const blockSize = 4 * 1024 // 4KB
@@ -17,73 +14,30 @@ type IndexEntry struct {
 	Offset int64
 }
 
-type SSTableBuilder struct {
-	file          *os.File
+type Builder struct {
+	File          *os.File
 	index         []IndexEntry
 	filter        *bloom.BloomFilter
 	currentOffset int64
 	blockStart    int64
 }
 
-func NewSSTableBuilder(filename string, keyCount int) (*SSTableBuilder, error) {
+func NewBuilder(filename string, keyCount int) (*Builder, error) {
 	f, err := os.Create(filename)
 	if err != nil {
 		return nil, err
 	}
 	bf := bloom.New(keyCount)
 
-	return &SSTableBuilder{
-		file:          f,
+	return &Builder{
+		File:          f,
 		filter:        bf,
 		currentOffset: 0,
 		blockStart:    0,
 	}, nil
 }
 
-func createSSTable(frozenMem *MemTable, walDir string) error { // Added walDir arg for cleaner path handling
-	// sort
-	keys := make([]string, 0, len(frozenMem.Index))
-	for k := range frozenMem.Index {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	filename := fmt.Sprintf("%s/level0_%d.sst", walDir, time.Now().UnixNano()) // Use walDir path
-	builder, err := NewSSTableBuilder(filename, len(keys))
-	if err != nil {
-		return fmt.Errorf("failed to create sstable file: %w", err)
-	}
-
-	// add to builder
-	for _, k := range keys {
-		offset := frozenMem.Index[k]
-		val, isTombstone, _ := frozenMem.Arena.Get(offset)
-
-		// Convert string to []byte for the Builder
-		err := builder.Add([]byte(k), val, isTombstone)
-		if err != nil {
-			// If write fails, we should probably close and delete the corrupt file
-			_ = builder.file.Close()
-			_ = os.Remove(filename)
-			return fmt.Errorf("failed to add key to sstable: %w", err)
-		}
-	}
-
-	if err := builder.Close(); err != nil {
-		return fmt.Errorf("failed to close sstable: %w", err)
-	}
-
-	// 5. delete wal
-	if frozenMem.Wal != nil {
-		if err := frozenMem.Wal.Remove(); err != nil {
-			fmt.Printf("Warning: failed to delete old WAL: %v\n", err)
-		}
-	}
-
-	return nil
-}
-
-func (b *SSTableBuilder) Add(key []byte, val []byte, isTombstone bool) error {
+func (b *Builder) Add(key []byte, val []byte, isTombstone bool) error {
 	//Sparse Index: logic
 	b.filter.Add(key)
 	if b.currentOffset == 0 || (b.currentOffset-b.blockStart) > blockSize {
@@ -97,7 +51,7 @@ func (b *SSTableBuilder) Add(key []byte, val []byte, isTombstone bool) error {
 	if isTombstone {
 		header = 1
 	}
-	if _, err := b.file.Write([]byte{header}); err != nil {
+	if _, err := b.File.Write([]byte{header}); err != nil {
 		return err
 	}
 	var lenBuf [6]byte
@@ -107,14 +61,14 @@ func (b *SSTableBuilder) Add(key []byte, val []byte, isTombstone bool) error {
 		valLen = 0 // Tombstones have no val
 	}
 	binary.LittleEndian.PutUint32(lenBuf[2:6], uint32(valLen))
-	if _, err := b.file.Write(lenBuf[:]); err != nil {
+	if _, err := b.File.Write(lenBuf[:]); err != nil {
 		return err
 	}
-	if _, err := b.file.Write(key); err != nil {
+	if _, err := b.File.Write(key); err != nil {
 		return err
 	}
 	if !isTombstone {
-		if _, err := b.file.Write(val); err != nil {
+		if _, err := b.File.Write(val); err != nil {
 			return err
 		}
 	}
@@ -125,22 +79,22 @@ func (b *SSTableBuilder) Add(key []byte, val []byte, isTombstone bool) error {
 	return nil
 }
 
-func (b *SSTableBuilder) Close() error {
+func (b *Builder) Close() error {
 	indexStartOffset := b.currentOffset // end of the last block is the start of the index entries
 	// Format for each entry: [KeyLen(2)][KeyBytes][Offset(8)]
 	var buf [10]byte // Reusable buffer for lengths and offset
 	for _, entry := range b.index {
 		binary.LittleEndian.PutUint16(buf[0:2], uint16(len(entry.key)))
-		if _, err := b.file.Write(buf[0:2]); err != nil {
+		if _, err := b.File.Write(buf[0:2]); err != nil {
 			return err
 		}
 
-		if _, err := b.file.WriteString(entry.key); err != nil {
+		if _, err := b.File.WriteString(entry.key); err != nil {
 			return err
 		}
 
 		binary.LittleEndian.PutUint64(buf[2:10], uint64(entry.Offset))
-		if _, err := b.file.Write(buf[2:10]); err != nil {
+		if _, err := b.File.Write(buf[2:10]); err != nil {
 			return err
 		}
 		entrySize := int64(2 + len(entry.key) + 8)
@@ -148,7 +102,7 @@ func (b *SSTableBuilder) Close() error {
 	}
 	filterStartOffset := b.currentOffset // This is where the filter begins
 	filterBytes := b.filter.Bytes()
-	if _, err := b.file.Write(filterBytes); err != nil {
+	if _, err := b.File.Write(filterBytes); err != nil {
 		return err
 	}
 	b.currentOffset += int64(len(filterBytes))
@@ -159,12 +113,12 @@ func (b *SSTableBuilder) Close() error {
 	binary.LittleEndian.PutUint64(footer[0:8], uint64(indexStartOffset))
 	binary.LittleEndian.PutUint64(footer[8:16], uint64(filterStartOffset))
 
-	if _, err := b.file.Write(footer[:]); err != nil {
+	if _, err := b.File.Write(footer[:]); err != nil {
 		return err
 	}
 
-	if err := b.file.Sync(); err != nil {
+	if err := b.File.Sync(); err != nil {
 		return err
 	}
-	return b.file.Close()
+	return b.File.Close()
 }

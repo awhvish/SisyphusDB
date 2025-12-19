@@ -1,23 +1,24 @@
-package kv
+package sstable
 
 import (
-	"KV-Store/bloom"
+	"KV-Store/pkg/bloom"
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sort"
 )
 
-type SSTableReader struct {
+type Reader struct {
 	file     *os.File
 	index    []IndexEntry // Sparse Index
 	filter   *bloom.BloomFilter
 	filename string
 }
 
-func OpenSSTable(filename string) (*SSTableReader, error) {
+func OpenSSTable(filename string) (*Reader, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -94,7 +95,7 @@ func OpenSSTable(filename string) (*SSTableReader, error) {
 	// Load Filter
 	bf := bloom.Load(filterBytes)
 
-	return &SSTableReader{
+	return &Reader{
 		file:     f,
 		index:    index,
 		filename: filename,
@@ -102,9 +103,10 @@ func OpenSSTable(filename string) (*SSTableReader, error) {
 	}, nil
 }
 
-func (r *SSTableReader) Get(targetKey string) (string, bool, bool, error) {
+func (r *Reader) Get(targetKey string) (string, bool, bool, error) {
 	//bloom filter check
 	if !r.filter.MaybeContains([]byte(targetKey)) {
+		fmt.Printf(" [Bloom Filter] Blocked key '%s' (Saved disk seek!)\n", targetKey)
 		return "", false, false, nil
 	}
 	// BINARY SEARCH IN RAM - []IndexEntries
@@ -183,6 +185,6 @@ func (r *SSTableReader) Get(targetKey string) (string, bool, bool, error) {
 	return "", false, false, nil // Not found in this block
 }
 
-func (r *SSTableReader) Close() error {
+func (r *Reader) Close() error {
 	return r.file.Close()
 }
