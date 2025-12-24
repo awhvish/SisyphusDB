@@ -50,6 +50,57 @@ func (rf *Raft) getState() (int, bool) {
 	return rf.currentTerm, rf.state == Leader
 }
 
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.state != Leader {
+		return -1, rf.currentTerm, false
+	}
+
+	//create log entry
+	index := len(rf.log)
+	term := rf.currentTerm
+	// TODO: Use type assertion or serialization later here
+	cmdBytes, ok := command.([]byte)
+	if !ok {
+		return -1, rf.currentTerm, false
+	}
+	rf.log = append(rf.log, LogEntry{index, term, cmdBytes})
+
+	// TODO: Persistance
+	// rf.persist() - saves to disk
+
+	//trigger replication
+	//TODO: Optimization
+	go rf.sendHeartBeats()
+	return index, term, true
+}
+
+// goroutine that pushes data into the KV Store
+func (rf *Raft) applier() {
+	for {
+		time.Sleep(10 * time.Millisecond)
+		rf.mu.Lock()
+
+		if rf.commitIndex > rf.lastApplied {
+			rf.lastApplied++
+			entry := rf.log[rf.lastApplied]
+
+			msg := LogEntry{
+				Command: entry.Command,
+				index:   entry.index,
+				term:    entry.term,
+			}
+			rf.mu.Unlock()
+			// send to kv store
+			rf.applyCh <- msg
+		} else {
+			rf.mu.Unlock()
+		}
+	}
+}
+
 func Make(peers []interface{}, me int, applyCh chan LogEntry) *Raft {
 	rf := &Raft{}
 	rf.peers = peers

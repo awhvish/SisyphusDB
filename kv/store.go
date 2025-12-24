@@ -3,7 +3,9 @@ package kv
 import (
 	"KV-Store/pkg/arena"
 	"KV-Store/pkg/wal"
+	"KV-Store/raft"
 	"KV-Store/sstable"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,21 +16,11 @@ import (
 	"time"
 )
 
-const mapLimit = 10 * 1024 // 10KB for now
-
 type MemTable struct {
 	Index map[string]int
 	Arena *arena.Arena
 	size  uint32
 	Wal   *wal.WAL
-}
-
-func NewMemTable(size int, newWal *wal.WAL) *MemTable {
-	return &MemTable{
-		Index: make(map[string]int),
-		Arena: arena.NewArena(size),
-		Wal:   newWal,
-	}
 }
 
 type Store struct {
@@ -38,11 +30,15 @@ type Store struct {
 	walDir    string
 	sstDir    string
 	walSeq    int64
-	flushChan chan struct{}
-	mu        sync.RWMutex
+	flushChan chan struct{} // FrozenMem -> Active Mem
+	// Raft Channels
+	raft        *raft.Raft
+	notifyChans map[int]chan OpResult // return client -> success
+	applyCh     chan raft.LogEntry    // applied cmds -> internal storage
+	mu          sync.RWMutex
 }
 
-func NewKVStore() (*Store, error) {
+func NewKVStore(peers []interface{}, me int) (*Store, error) {
 	walDir := filepath.Join("wal")
 	sstDir := filepath.Join("data")
 
@@ -57,12 +53,14 @@ func NewKVStore() (*Store, error) {
 
 	currentWal, _ := wal.OpenWAL(walDir, seqId)
 	entries, _ := currentWal.Recover()
+	applyCh := make(chan raft.LogEntry)
 	store := &Store{
 		activeMap: NewMemTable(mapLimit, currentWal),
 		frozenMap: nil,
 		walDir:    walDir,
 		sstDir:    sstDir,
 		flushChan: make(chan struct{}),
+		applyCh:   applyCh,
 	}
 	for _, entry := range entries {
 		k := string(entry.Key)
@@ -85,91 +83,31 @@ func NewKVStore() (*Store, error) {
 		store.activeMap.Index[k] = offset
 		store.activeMap.size += uint32(len(k) + len(v))
 	}
+	store.raft = raft.Make(peers, me, applyCh)
+	go store.readAppliedLogs()
 	go store.FlushWorker()
 	return store, nil
 }
 
-func CreateSSTable(frozenMem *MemTable, sstDir string, level int) error { // Added walDir arg for cleaner path handling
-	// sort
-	keys := make([]string, 0, len(frozenMem.Index))
-	for k := range frozenMem.Index {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	filename := fmt.Sprintf("%s/L%d_%d.sst", sstDir, level, time.Now().UnixNano()) // Use walDir path
-	builder, err := sstable.NewBuilder(filename, len(keys))
-	if err != nil {
-		return fmt.Errorf("failed to create sstable file: %w", err)
-	}
-
-	// add to builder
-	for _, k := range keys {
-		offset := frozenMem.Index[k]
-		val, isTombstone, _ := frozenMem.Arena.Get(offset)
-
-		// Convert string to []byte for the Builder
-		err := builder.Add([]byte(k), val, isTombstone)
-		if err != nil {
-			// If write fails, we should probably close and delete the corrupt file
-			_ = builder.File.Close()
-			_ = os.Remove(filename)
-			return fmt.Errorf("failed to add key to sstable: %w", err)
-		}
-	}
-
-	if err := builder.Close(); err != nil {
-		return fmt.Errorf("failed to close sstable: %w", err)
-	}
-
-	// 5. delete wal
-	if frozenMem.Wal != nil {
-		if err := frozenMem.Wal.Remove(); err != nil {
-			fmt.Printf("Warning: failed to delete old WAL: %v\n", err)
-		}
-	}
-
-	return nil
-}
-
-func (s *Store) FlushWorker() {
-
-	for range s.flushChan {
+// Loop that pulls data from Raft and writes to Store
+func (s *Store) readAppliedLogs() {
+	for msg := range s.applyCh {
+		//deserialize
+		var cmd raftCmd
+		_ = json.Unmarshal(msg.Command, &cmd)
 		s.mu.Lock()
-		frozenMem := s.frozenMap
-		s.mu.Unlock()
-		if frozenMem == nil || frozenMem.size == 0 {
-			continue
-		}
-		err := CreateSSTable(frozenMem, s.sstDir, 0)
-		if err != nil {
-			fmt.Printf("Failed to create SSTable %s: %s\n", s.walDir, err)
-			continue
-		}
-		s.mu.Lock()
-		s.frozenMap = nil
-		if s.activeMap.Wal != nil {
-			_ = s.activeMap.Wal.Remove() // Clean up old WAL
+		if cmd.Op == CmdPut {
+			_ = s.applyInternal(cmd.Key, cmd.Value, false)
+		} else if cmd.Op == CmdDelete {
+			_ = s.applyInternal(cmd.Key, "", true)
 		}
 		s.mu.Unlock()
-		s.refreshSSTables()
-		_ = s.CheckAndCompact(0)
+
 	}
 }
 
-func (s *Store) RotateTable() {
-	s.frozenMap = s.activeMap
-	s.walSeq++
-	newWal, _ := wal.OpenWAL(s.walDir, s.walSeq)
-	s.activeMap = NewMemTable(mapLimit, newWal)
-
-	select {
-	case s.flushChan <- struct{}{}:
-	default:
-	}
-}
-
-func (s *Store) Put(key string, val string, isDelete bool) error {
+// Put in storage
+func (s *Store) applyInternal(key string, val string, isDelete bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	//  size: Header(1) + KeyLen(2) + ValLen(4) + Key + Val
@@ -201,22 +139,37 @@ func (s *Store) Put(key string, val string, isDelete bool) error {
 	return nil
 }
 
-func checkTable(table *MemTable, key string) (string, bool, bool) {
-	if table == nil {
-		return "", false, false
+func (s *Store) Put(key string, val string, isDelete bool) error {
+	op := CmdPut
+	if isDelete {
+		op = CmdDelete
 	}
-	offset, ok := table.Index[key]
-	if !ok {
-		return "", false, false
+	cmd := raftCmd{Op: op, Key: key, Value: val}
+	cmdBytes, _ := json.Marshal(cmd)
+
+	index, _, isLeader := s.raft.Start(cmdBytes)
+	if !isLeader {
+		return fmt.Errorf("not leader")
 	}
-	valBytes, isTombstone, err := table.Arena.Get(offset)
-	if err != nil {
-		return "", false, false
+	//create notify channel
+	s.mu.Lock()
+	if s.notifyChans == nil {
+		s.notifyChans = make(map[int]chan OpResult)
 	}
-	if isTombstone {
-		return "", true, true
+	ch := make(chan OpResult)
+	s.notifyChans[index] = ch
+	s.mu.Unlock()
+
+	// wait for consensus to replicate
+	select {
+	case res := <-ch:
+		return res.Err
+	case <-time.After(2 * time.Second):
+		s.mu.Lock()
+		delete(s.notifyChans, index)
+		s.mu.Unlock()
+		return fmt.Errorf("timeout waiting for consensus")
 	}
-	return string(valBytes), false, true
 }
 
 func (s *Store) Get(key string) (string, bool) {
