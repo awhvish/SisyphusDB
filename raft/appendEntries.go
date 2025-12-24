@@ -1,6 +1,10 @@
 package raft
 
-import "time"
+import (
+	pb "KV-Store/proto"
+	"context"
+	"time"
+)
 
 type AppendEntriesArgs struct {
 	Term         int //leader's term
@@ -47,7 +51,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		index := insertIndex + i
 		// conflict detected
 		if index < len(rf.log) {
-			if rf.log[index].term > args.Term {
+			if rf.log[index].term != args.Term {
 				rf.log = rf.log[:index]        // truncate the log upto match
 				rf.log = append(rf.log, entry) // append new entry
 			}
@@ -124,7 +128,19 @@ func (rf *Raft) sendHeartBeats() {
 						rf.matchIndex[server] = newMatchIndex
 						rf.nextIndex[server] = rf.matchIndex[server] + 1
 					}
-					// TODO: Update Leader's CommitIndex here (Step 4 below)
+					//update commit index
+					for N := len(rf.log) - 1; N > rf.commitIndex; N-- {
+						count := 1 // Count self
+						for i := range rf.peers {
+							if i != rf.me && rf.matchIndex[i] >= N {
+								count++
+							}
+						}
+						if count > len(rf.peers)/2 && rf.log[N].term == rf.currentTerm {
+							rf.commitIndex = N
+							break // Found the highest committed index
+						}
+					}
 				} else {
 					// Failure: Follower's log is inconsistent.
 					// Backtrack: Decrement nextIndex and retry later
@@ -136,5 +152,36 @@ func (rf *Raft) sendHeartBeats() {
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	return false // Placeholder for gRPC
+	// 1. Convert to Proto
+	pbEntries := make([]*pb.LogEntry, len(args.Entries))
+	for i, v := range args.Entries {
+		pbEntries[i] = &pb.LogEntry{
+			Index:   int32(v.index),
+			Term:    int32(v.term),
+			Command: v.Command,
+		}
+	}
+
+	pbArgs := &pb.AppendEntriesRequest{
+		Term:         int32(args.Term),
+		LeaderId:     int32(args.LeaderId),
+		PrevLogIndex: int32(args.PrevLogIndex),
+		PrevLogTerm:  int32(args.PrevLogTerm),
+		Entries:      pbEntries,
+		LeaderCommit: int32(args.LeaderCommit),
+	}
+
+	// 2. Call gRPC
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*100)
+	defer cancel()
+
+	pbReply, err := rf.peers[server].AppendEntries(ctx, pbArgs)
+	if err != nil {
+		return false
+	}
+
+	// 3. Unpack Response
+	reply.Term = int(pbReply.Term)
+	reply.Success = pbReply.Success
+	return true
 }

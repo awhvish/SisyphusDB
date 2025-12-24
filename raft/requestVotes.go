@@ -37,7 +37,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//if log of candidate is greater or upto date with current node accept
 	if args.LastLogTerm > LastLogTerm {
 		logOk = true
-	} else if args.LastLogTerm == LastLogTerm && args.LastLogIndex == lastLogIndex {
+	} else if args.LastLogTerm == LastLogTerm && args.LastLogIndex >= lastLogIndex {
 		logOk = true
 	}
 

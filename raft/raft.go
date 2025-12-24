@@ -1,6 +1,8 @@
 package raft
 
 import (
+	pb "KV-Store/proto"
+	"context"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -23,9 +25,9 @@ type LogEntry struct {
 
 type Raft struct {
 	mu      sync.Mutex
-	peers   []interface{} // RPC clients to talk to other nodes
-	me      int           // this peer's index into peers[]
-	applyCh chan LogEntry // Channel to send committed data to the KV Store
+	peers   []pb.RaftServiceClient // RPC clients to talk to other nodes
+	me      int                    // this peer's index into peers[]
+	applyCh chan LogEntry          // Channel to send committed data to the KV Store
 
 	//persistent states
 	currentTerm int
@@ -101,7 +103,7 @@ func (rf *Raft) applier() {
 	}
 }
 
-func Make(peers []interface{}, me int, applyCh chan LogEntry) *Raft {
+func Make(peers []pb.RaftServiceClient, me int, applyCh chan LogEntry) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.me = me
@@ -167,47 +169,61 @@ func (rf *Raft) startElection() {
 		if i == rf.me {
 			continue
 		}
-		for i := range rf.peers {
-			go func(peerIndex int) {
-				args := RequestVoteArgs{
-					Term:         term,
-					CandidateId:  rf.me,
-					LastLogTerm:  lastLogTerm,
-					LastLogIndex: lastLogIndex,
-				}
-				reply := RequestVoteReply{}
-				if rf.state != Candidate || rf.currentTerm != term {
-					return
-				}
-				// current term is outdated
-				if reply.Term > rf.currentTerm {
-					rf.currentTerm = reply.Term
-					rf.state = Follower
-					rf.votedFor = -1
-					return
-				}
-				if rf.sendRequestVote(peerIndex, &args, &reply) {
-					rf.mu.Lock()
-					defer rf.mu.Unlock()
-					if reply.VoteGranted {
-						votesReceived++
-						if votesReceived >= votesRequired {
-							fmt.Printf("Node %d won election and will be leader for the term: %d", rf.me, reply.Term)
-							rf.state = Leader
-							for p := range rf.peers {
-								rf.nextIndex[p] = len(rf.log) // Optimistically assume they match
-								rf.matchIndex[p] = 0
-							}
-							go rf.sendHeartBeats()
+		go func(peerIndex int) {
+			args := RequestVoteArgs{
+				Term:         term,
+				CandidateId:  rf.me,
+				LastLogTerm:  lastLogTerm,
+				LastLogIndex: lastLogIndex,
+			}
+			reply := RequestVoteReply{}
+			if rf.state != Candidate || rf.currentTerm != term {
+				return
+			}
+			// current term is outdated
+			if reply.Term > rf.currentTerm {
+				rf.currentTerm = reply.Term
+				rf.state = Follower
+				rf.votedFor = -1
+				return
+			}
+			if rf.sendRequestVote(peerIndex, &args, &reply) {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+				if reply.VoteGranted {
+					votesReceived++
+					if votesReceived >= votesRequired {
+						fmt.Printf("Node %d won election and will be leader for the term: %d", rf.me, reply.Term)
+						rf.state = Leader
+						for p := range rf.peers {
+							rf.nextIndex[p] = len(rf.log) // Optimistically assume they match
+							rf.matchIndex[p] = 0
 						}
+						go rf.sendHeartBeats()
 					}
 				}
-			}(i)
-		}
+			}
+		}(i)
 
 	}
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	return false
+	pbArgs := &pb.RequestVoteRequest{
+		Term:         int32(args.Term),
+		CandidateId:  int32(args.CandidateId),
+		LastLogIndex: int32(args.LastLogIndex),
+		LastLogTerm:  int32(args.LastLogTerm),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*100)
+	defer cancel()
+
+	pbReply, err := rf.peers[server].RequestVote(ctx, pbArgs)
+	if err != nil {
+		return false
+	}
+	reply.Term = int(pbReply.Term)
+	reply.VoteGranted = pbReply.VoteGranted
+	return true
 }
