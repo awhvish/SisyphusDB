@@ -29,6 +29,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		rf.state = Follower
 		rf.votedFor = -1
+		rf.leaderId = -1
 		rf.persist()
 	}
 	reply.Term = rf.currentTerm

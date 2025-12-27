@@ -24,10 +24,11 @@ type LogEntry struct {
 }
 
 type Raft struct {
-	mu      sync.Mutex
-	peers   []pb.RaftServiceClient // RPC clients to talk to other nodes
-	me      int                    // this peer's index into peers[]
-	applyCh chan LogEntry          // Channel to send committed data to the KV Store
+	mu       sync.Mutex
+	peers    []pb.RaftServiceClient // RPC clients to talk to other nodes
+	me       int                    // this peer's index into peers[]
+	leaderId int
+	applyCh  chan LogEntry // Channel to send committed data to the KV Store
 
 	//persistent states
 	currentTerm int
@@ -50,6 +51,12 @@ func (rf *Raft) getState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.currentTerm, rf.state == Leader
+}
+
+func (rf *Raft) GetLeader() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.leaderId
 }
 
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
@@ -111,6 +118,7 @@ func Make(peers []pb.RaftServiceClient, me int, applyCh chan LogEntry) *Raft {
 	rf.state = Follower
 	rf.currentTerm = 0
 	rf.votedFor = -1
+	rf.leaderId = -1
 	rf.log = make([]LogEntry, 0)
 
 	rf.log = append(rf.log, LogEntry{Term: 0})
@@ -191,6 +199,7 @@ func (rf *Raft) startElection() {
 					rf.currentTerm = reply.Term
 					rf.state = Follower
 					rf.votedFor = -1
+					rf.leaderId = -1
 					rf.persist()
 					return
 				}
@@ -200,6 +209,7 @@ func (rf *Raft) startElection() {
 					if votesReceived == votesRequired {
 						fmt.Printf("Node %d won election and will be leader for the term: %d\n", rf.me, reply.Term)
 						rf.state = Leader
+						rf.leaderId = rf.me
 						for p := range rf.peers {
 							rf.nextIndex[p] = len(rf.log)
 							rf.matchIndex[p] = 0

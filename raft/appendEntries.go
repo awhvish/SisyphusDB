@@ -39,6 +39,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.currentTerm = args.Term
 	rf.state = Follower
 	rf.votedFor = -1
+	rf.leaderId = args.LeaderId
 	rf.lastResetTime = time.Now()
 	rf.persist()
 	reply.Term = rf.currentTerm
@@ -128,6 +129,7 @@ func (rf *Raft) sendHeartBeats() {
 					rf.currentTerm = reply.Term
 					rf.state = Follower
 					rf.votedFor = -1
+					rf.leaderId = -1
 					return
 				}
 				if reply.Success {
