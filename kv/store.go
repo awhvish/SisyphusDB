@@ -32,6 +32,7 @@ type Store struct {
 	sstDir    string
 	walSeq    int64
 	flushChan chan struct{} // FrozenMem -> Active Mem
+	me        int           // same as raft.me, for prometheus metrics
 	// Raft Channels
 	Raft        *raft.Raft
 	notifyChans map[int]chan OpResult // return client -> success
@@ -62,6 +63,7 @@ func NewKVStore(peers []pb.RaftServiceClient, me int) (*Store, error) {
 		sstDir:    sstDir,
 		flushChan: make(chan struct{}),
 		applyCh:   applyCh,
+		me:        me,
 	}
 	for _, entry := range entries {
 		k := string(entry.Key)

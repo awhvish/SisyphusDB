@@ -3,6 +3,7 @@ package main
 import (
 	"KV-Store/api"
 	"KV-Store/kv"
+	"KV-Store/pkg/metrics"
 	pb "KV-Store/proto"
 	"flag"
 	"fmt"
@@ -10,12 +11,44 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const PORT = ":8080"
+// Middleware to record HTTP metrics
+func withMetrics(handler http.HandlerFunc, method string, endpoint string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Wrap the writer
+		ww := &responseWriterWrapper{ResponseWriter: w, statusCode: 200} // Default to 200
+
+		// Call the original handler
+		handler(ww, r)
+
+		// 1. Record Latency
+		duration := time.Since(start).Seconds()
+		metrics.HttpRequestDuration.WithLabelValues(method, endpoint).Observe(duration)
+
+		// 2. Record Count & Status
+		statusStr := fmt.Sprintf("%d", ww.statusCode)
+		metrics.HttpRequestsTotal.WithLabelValues(method, endpoint, statusStr).Inc()
+	}
+}
+
+// Helper struct to capture status code
+type responseWriterWrapper struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (ww *responseWriterWrapper) WriteHeader(code int) {
+	ww.statusCode = code
+	ww.ResponseWriter.WriteHeader(code)
+}
 
 func main() {
 	id := flag.Int("id", 0, "ID of KV store")
@@ -57,19 +90,19 @@ func main() {
 			log.Fatalf("failed to serve: %v", err)
 		}
 	}()
-
-	http.HandleFunc("/get", func(w http.ResponseWriter, r *http.Request) {
+	//withMetrics measures latency, traffic & errors using prometheus
+	http.HandleFunc("/get", withMetrics(func(w http.ResponseWriter, r *http.Request) {
 		key := r.URL.Query().Get("key")
-		val, found := store.Get(key) // You need to implement Get in store.go wrapping Raft if needed, or local read
+		val, found := store.Get(key)
 		if !found {
 			http.Error(w, "Key not found", http.StatusNotFound)
 			return
 		}
 		_, _ = w.Write([]byte(val))
-	})
+	}, "GET", "/get"))
 
-	// POST /put?key=foo&val=bar
-	http.HandleFunc("/put", func(w http.ResponseWriter, r *http.Request) {
+	//withMetrics measures latency, traffic & errors
+	http.HandleFunc("/put", withMetrics(func(w http.ResponseWriter, r *http.Request) {
 		key := r.URL.Query().Get("key")
 		val := r.URL.Query().Get("val")
 		err := store.Put(key, val, false)
@@ -94,7 +127,10 @@ func main() {
 			return
 		}
 		_, _ = w.Write([]byte("Success"))
-	})
+	}, "GET", "/put"))
+
+	//prometheus metrics
+	http.Handle("/metrics", promhttp.Handler())
 
 	fmt.Printf("KV Store HTTP server listening on %s\n", *httpPort)
 	// This blocks forever and serves requests

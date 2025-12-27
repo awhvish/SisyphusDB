@@ -8,6 +8,7 @@ import (
 )
 
 func (rf *Raft) persist() {
+	rf.reportMetrics()
 	w := new(bytes.Buffer)
 	e := gob.NewEncoder(w)
 

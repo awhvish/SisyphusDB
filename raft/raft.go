@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"KV-Store/pkg/metrics"
 	pb "KV-Store/proto"
 	"context"
 	"fmt"
@@ -80,7 +81,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.persist()
 	fmt.Printf("[Start] Leader %d received command at Index %d, Term %d\n", rf.me, index, term)
 	//trigger replication
-	//TODO: Optimization
 	go rf.sendHeartBeats()
 	return index, term, true
 }
@@ -141,6 +141,7 @@ func (rf *Raft) ticker() {
 	for {
 		//sleep for a short duration of time
 		time.Sleep(10 * time.Millisecond)
+		rf.reportMetrics()
 
 		rf.mu.Lock()
 		currentState := rf.state
@@ -240,4 +241,13 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	reply.Term = int(pbReply.Term)
 	reply.VoteGranted = pbReply.VoteGranted
 	return true
+}
+
+func (rf *Raft) reportMetrics() {
+	id := fmt.Sprintf("%d", rf.me)
+
+	metrics.TermGauge.WithLabelValues(id).Set(float64(rf.currentTerm))
+	metrics.CommitIndexGauge.WithLabelValues(id).Set(float64(rf.commitIndex))
+	metrics.StateGauge.WithLabelValues(id).Set(float64(rf.state))
+	metrics.LeaderGauge.WithLabelValues(id).Set(float64(rf.leaderId))
 }

@@ -1,6 +1,7 @@
 package kv
 
 import (
+	"KV-Store/pkg/metrics"
 	"KV-Store/sstable"
 	"fmt"
 	"os"
@@ -29,6 +30,10 @@ func (s *Store) getFilesForLevel(level int) []string {
 
 	return matchedFiles
 }
+
+//Recursive function that compacts level by level
+//CheckAndCompact(0) -> checkAndCompact(1) -> checkAndCompact(2)
+// if any level contains > 4 files
 
 func (s *Store) CheckAndCompact(level int) error {
 	s.mu.Lock()
@@ -152,4 +157,29 @@ func (s *Store) refreshSSTables() {
 		}
 	}
 	s.ssTables = readers
+}
+
+func (s *Store) reportLevelMetrics() {
+	files, _ := os.ReadDir(s.sstDir)
+
+	levelCounts := make(map[int]float64)
+	levelSizes := make(map[int]float64)
+
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".sst") {
+			var level int
+			_, _ = fmt.Sscanf(f.Name(), "L%d_", &level)
+			levelCounts[level]++
+			info, _ := f.Info()
+			levelSizes[level] += float64(info.Size())
+		}
+	}
+
+	idStr := fmt.Sprintf("%d", s.me)
+
+	for lvl, count := range levelCounts {
+		lvlStr := fmt.Sprintf("%d", lvl)
+		metrics.LevelFileCount.WithLabelValues(idStr, lvlStr).Set(count)
+		metrics.LevelSize.WithLabelValues(idStr, lvlStr).Set(levelSizes[lvl])
+	}
 }
