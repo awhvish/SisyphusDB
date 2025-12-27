@@ -61,7 +61,7 @@ func NewKVStore(peers []pb.RaftServiceClient, me int) (*Store, error) {
 		frozenMap: nil,
 		walDir:    walDir,
 		sstDir:    sstDir,
-		flushChan: make(chan struct{}),
+		flushChan: make(chan struct{}, 1),
 		applyCh:   applyCh,
 		me:        me,
 	}
@@ -86,6 +86,7 @@ func NewKVStore(peers []pb.RaftServiceClient, me int) (*Store, error) {
 		store.activeMap.Index[k] = offset
 		store.activeMap.size += uint32(len(k) + len(v))
 	}
+	store.refreshSSTables()
 	store.Raft = raft.Make(peers, me, applyCh)
 	go store.readAppliedLogs()
 	go store.FlushWorker()
