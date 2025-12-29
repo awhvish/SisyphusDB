@@ -2,7 +2,7 @@ package main
 
 import (
 	"KV-Store/api"
-	"KV-Store/docs/benchmarks/arena"
+	"KV-Store/kv"
 	"KV-Store/pkg/metrics"
 	pb "KV-Store/proto"
 	"flag"
@@ -92,7 +92,7 @@ func main() {
 		raftClients = append(raftClients, pb.NewRaftServiceClient(conn))
 	}
 
-	store, err := benchmarks.NewKVStore(raftClients, *id)
+	store, err := kv.NewKVStore(raftClients, *id)
 	if err != nil {
 		log.Fatalf("Error intializing KV-Store: %v", err)
 	}
