@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const mapLimit = 10 * 1024 // 10KB per map
+const mapLimit = 10 * 1024 * 1024 // 10MB per map
 
 type Commands byte
 

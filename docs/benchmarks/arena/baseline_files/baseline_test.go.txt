@@ -1,0 +1,108 @@
+package benchmarks
+
+import (
+	pb "KV-Store/proto" // Adjust path if needed
+	"fmt"
+	"math/rand"
+	"os"
+	"testing"
+)
+
+// setupTestStore creates a store with a unique directory for testing
+func setupTestStore(t testing.TB, id int) *Store {
+	// Clean previous runs
+	baseDir := fmt.Sprintf("Storage_Bench_Map_%d", id)
+	os.RemoveAll(baseDir)
+
+	// Mock peers (empty for this bench since we bypass Raft)
+	peers := []pb.RaftServiceClient{}
+
+	// Initialize Store
+	// Note: We hijack the internal paths in NewKVStore by setting 'me' to a unique ID
+	// In a real scenario, you might want to pass the config path explicitly.
+	store, err := NewKVStore(peers, id)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	// Override directories to our test temp dir to be safe
+	store.walDir = baseDir + "/wal"
+	store.sstDir = baseDir + "/data"
+	os.MkdirAll(store.walDir, 0755)
+	os.MkdirAll(store.sstDir, 0755)
+
+	return store
+}
+
+func cleanupTestStore(id int) {
+	baseDir := fmt.Sprintf("Storage/wal/wal_%d", id)
+	dataDir := fmt.Sprintf("Storage/data/data_%d", id)
+	os.RemoveAll(baseDir)
+	os.RemoveAll(dataDir)
+}
+
+// --- FUNCTIONAL TEST ---
+func TestBasicPutGet(t *testing.T) {
+	id := 999
+	store := setupTestStore(t, id)
+	defer cleanupTestStore(id)
+
+	key := "test-key"
+	val := "test-value-123"
+
+	// 1. Test Put
+	err := store.Put(key, val, false)
+	if err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	// 2. Test Get
+	gotVal, found := store.Get(key)
+	if !found {
+		t.Fatalf("Key not found")
+	}
+	if gotVal != val {
+		t.Errorf("Expected %s, got %s", val, gotVal)
+	}
+
+	// 3. Test Overwrite
+	newVal := "new-value-456"
+	store.Put(key, newVal, false)
+	gotVal, _ = store.Get(key)
+	if gotVal != newVal {
+		t.Errorf("Overwrite failed. Expected %s, got %s", newVal, gotVal)
+	}
+}
+
+// --- BENCHMARK ---
+func BenchmarkMapStore_Put(b *testing.B) {
+	// 1. Setup
+	id := 100
+	store := setupTestStore(b, id)
+	defer cleanupTestStore(id)
+
+	// 2. Pre-compute Keys to avoid measuring fmt.Sprintf
+	// We use a pool of random keys to simulate a semi-realistic load
+	// and trigger map rebalancing/allocations.
+	const poolSize = 100000
+	keys := make([]string, poolSize)
+	val := "v-1234567890" // 12 bytes value
+
+	for i := 0; i < poolSize; i++ {
+		keys[i] = fmt.Sprintf("key-%08d", rand.Intn(10000000))
+	}
+
+	b.ReportAllocs() // CRITICAL: This will show you the GC pressure (allocs/op)
+	b.ResetTimer()
+
+	// 3. The Hot Loop
+	for i := 0; i < b.N; i++ {
+		// Use modulo to cycle through keys
+		key := keys[i%poolSize]
+
+		err := store.Put(key, val, false)
+		if err != nil {
+			b.Fatalf("Put failed at op %d: %v", i, err)
+		}
+	}
+}

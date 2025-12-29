@@ -1,0 +1,200 @@
+package benchmarks
+
+import (
+	"KV-Store/pkg/wal"
+	pb "KV-Store/proto"
+	"KV-Store/raft"
+	"KV-Store/sstable"
+	"encoding/json"
+	"fmt"
+	"os"
+	"sort"
+	"sync"
+	"time"
+)
+
+// --- BASELINE MEMTABLE (Standard Go Map) ---
+type Item struct {
+	Value       string
+	IsTombstone bool
+}
+
+type MemTable struct {
+	Data map[string]Item // High GC pressure!
+	size uint32
+	Wal  *wal.WAL
+}
+
+func NewMemTable(limit int, wal *wal.WAL) *MemTable {
+	return &MemTable{
+		Data: make(map[string]Item),
+		size: 0,
+		Wal:  wal,
+	}
+}
+
+// --- STORE IMPLEMENTATION ---
+const mapLimit = 10 * 1024 * 1024 // 10MB
+
+type Store struct {
+	activeMap    *MemTable
+	frozenMap    *MemTable
+	walDir       string
+	sstDir       string
+	flushChan    chan struct{}
+	me           int
+	Raft         *raft.Raft
+	notifyChans  map[int]chan OpResult
+	applyCh      chan raft.LogEntry
+	mu           sync.RWMutex
+	compactionMu sync.Mutex
+	cond         *sync.Cond
+}
+
+func NewKVStore(peers []pb.RaftServiceClient, me int) (*Store, error) {
+	walDir := fmt.Sprintf("Storage/wal/wal_%d", me)
+	sstDir := fmt.Sprintf("Storage/data/data_%d", me)
+	os.MkdirAll(walDir, 0755)
+	os.MkdirAll(sstDir, 0755)
+
+	_, seqId, _ := wal.FindActiveFile(walDir)
+	currentWal, _ := wal.OpenWAL(walDir, seqId)
+
+	store := &Store{
+		activeMap:   NewMemTable(mapLimit, currentWal),
+		walDir:      walDir,
+		sstDir:      sstDir,
+		flushChan:   make(chan struct{}, 1),
+		applyCh:     make(chan raft.LogEntry),
+		me:          me,
+		notifyChans: make(map[int]chan OpResult),
+	}
+	store.cond = sync.NewCond(&store.mu)
+
+	// Recover (Mock for bench)
+	entries, _ := currentWal.Recover()
+	for _, entry := range entries {
+		store.activeMap.Data[string(entry.Key)] = Item{
+			Value:       string(entry.Value),
+			IsTombstone: entry.Cmd == wal.CmdDelete,
+		}
+	}
+
+	// We don't strictly need Raft for the bench, but we initialize to satisfy struct
+	store.Raft = raft.Make(peers, me, store.applyCh)
+	go store.readAppliedLogs()
+	go store.FlushWorker()
+	return store, nil
+}
+
+// --- FLUSH WORKER (Adapted for MAP) ---
+func (s *Store) FlushWorker() {
+	for range s.flushChan {
+		s.mu.Lock()
+		frozen := s.frozenMap
+		s.mu.Unlock()
+
+		if frozen == nil {
+			continue
+		}
+
+		// Convert Map to sorted list for SSTable
+		type kvPair struct {
+			k    string
+			item Item
+		}
+		var sorted []kvPair
+		for k, v := range frozen.Data {
+			sorted = append(sorted, kvPair{k, v})
+		}
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].k < sorted[j].k })
+
+		// Write to disk (Mocking the heavy lifting to focus bench on allocs)
+		filename := fmt.Sprintf("%s/level0_%d.sst", s.sstDir, time.Now().UnixNano())
+		builder, _ := sstable.NewBuilder(filename, 1000)
+		for _, pair := range sorted {
+			builder.Add([]byte(pair.k), []byte(pair.item.Value), pair.item.IsTombstone)
+		}
+		builder.Close()
+
+		s.mu.Lock()
+		s.frozenMap = nil
+		s.cond.Broadcast()
+		s.mu.Unlock()
+	}
+}
+
+func (s *Store) RotateTable() {
+	for s.frozenMap != nil {
+		s.cond.Wait()
+	}
+	s.frozenMap = s.activeMap
+	newWal, _ := wal.OpenWAL(s.walDir, time.Now().UnixNano())
+	s.activeMap = NewMemTable(mapLimit, newWal)
+
+	select {
+	case s.flushChan <- struct{}{}:
+	default:
+	}
+}
+
+// --- PUT / GET Logic ---
+
+func (s *Store) applyInternal(key string, val string, isDelete bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// THIS IS THE LINE THAT CAUSES GC PRESSURE (Map Assignment)
+	s.activeMap.Data[key] = Item{Value: val, IsTombstone: isDelete}
+	s.activeMap.size += uint32(len(key) + len(val))
+	return nil
+}
+
+func (s *Store) readAppliedLogs() {
+	for msg := range s.applyCh {
+		var cmd raftCmd
+		json.Unmarshal(msg.Command, &cmd)
+		s.applyInternal(cmd.Key, cmd.Value, cmd.Op == CmdDelete)
+
+		s.mu.Lock()
+		if ch, ok := s.notifyChans[msg.Index]; ok {
+			ch <- OpResult{Value: cmd.Value}
+			delete(s.notifyChans, msg.Index)
+		}
+		s.mu.Unlock()
+	}
+}
+
+func (s *Store) Put(key string, val string, isDelete bool) error {
+	// Direct apply for benchmark to test ENGINE speed, not Raft speed
+	return s.applyInternal(key, val, isDelete)
+}
+
+func (s *Store) Get(key string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if v, ok := s.activeMap.Data[key]; ok {
+		return v.Value, !v.IsTombstone
+	}
+	return "", false
+}
+
+// Mock Structs for compilation
+type OpResult struct {
+	Value string
+	Err   error
+}
+type raftCmd struct {
+	Op    int
+	Key   string
+	Value string
+}
+
+const (
+	CmdPut    = 1
+	CmdDelete = 2
+)
+
+func (s *Store) CheckAndCompact(level int) error              { return nil }
+func (s *Store) refreshSSTables()                             {}
+func checkTable(m *MemTable, key string) (string, bool, bool) { return "", false, false }

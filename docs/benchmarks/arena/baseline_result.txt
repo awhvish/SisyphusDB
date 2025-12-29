@@ -2,6 +2,7 @@ goos: linux
 goarch: amd64
 pkg: KV-Store/kv
 cpu: 12th Gen Intel(R) Core(TM) i5-12450H
-BenchmarkPut-12     2677622	       415.8 ns/op	     198 B/op	       4 allocs/op
+BenchmarkMapStore_Put-12
+14492640                82.21 ns/op            0 B/op          0 allocs/op
 PASS
-ok  	KV-Store/kv	1.741s
+ok      KV-Store/kv     2.426s
