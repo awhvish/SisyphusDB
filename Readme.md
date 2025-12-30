@@ -68,6 +68,8 @@ The system evolved through three distinct architectural phases to overcome physi
 
 Benchmarks were conducted using **Vegeta** running inside the Kubernetes cluster to bypass ingress bottlenecks.
 
+[Benchmark Results](https://github.com/awhvish/SisyphusDB/tree/master/docs/benchmarks/vegeta)
+
 **1. Peak Performance (Stress Test)**
 Pushing the system to its limits with a target of **3,000 Write RPS**:
 
