@@ -129,19 +129,101 @@ To Reproduce the benchmarks, refer to [INSTALL.md](INSTALL.md)
 
 
 ---
+###  Observability (Prometheus & Grafana)
+
+<img src="docs/graphana_dashboard.png" width="80%">
+
+SisyphusDB includes a production-grade monitoring stack to visualize throughput, latency, and Raft consensus states in real-time.
+
+#### 1. Deploy the Monitoring Stack
+
+The monitoring configuration is decoupled from the container images using Kubernetes ConfigMaps. You must create these configurations before deploying the pods.
+
+**Step A: Upload Configurations** Run these commands from the project root to load the Prometheus and Grafana configs into the cluster:
+
+Bash
+
+```
+# 1. Prometheus Config (Service Discovery & Relabeling)
+kubectl create configmap prometheus-config --from-file=deploy/prometheus/prometheus.yml
+
+# 2. Grafana Datasources (Connects to Prometheus)
+kubectl create configmap grafana-datasources --from-file=deploy/grafana/provisioning/datasources/datasource.yml
+
+# 3. Grafana Dashboard Provider (Auto-loads JSONs)
+kubectl create configmap grafana-provisioning --from-file=deploy/grafana/provisioning/dashboards/dashboard.yml
+
+# 4. The Dashboard JSON (The actual UI layout)
+kubectl create configmap grafana-dashboards --from-file=deploy/grafana/dashboards/raft-dashboard.json
+```
+
+**Step B: Apply Services & RBAC** Deploy the Prometheus/Grafana pods and grant them permission to scrape Kubernetes pod metrics.
+
+Bash
+
+```
+# Deploy RBAC permissions (Critical for Service Discovery)
+kubectl apply -f deploy/k8s/5-rbac.yaml
+
+# Deploy Prometheus and Grafana containers
+kubectl apply -f deploy/k8s/4-monitoring.yaml
+```
+
+#### 2. Access the Dashboards
+
+Since the monitoring services run inside the cluster, you must forward the ports to your local machine to view them.
+
+**View Grafana (Dashboards):**
+
+Bash
+
+```
+kubectl port-forward service/grafana 3000:3000
+```
+
+- **URL:** [http://localhost:3000](https://www.google.com/search?q=http://localhost:3000)
+
+- **Credentials:** `admin` / `admin`
+
+- _Note: The "Raft Cluster Metrics" dashboard will be pre-loaded under the "Dashboards" tab._
+
+
+**View Prometheus (Raw Metrics & Targets):**
+
+Bash
+
+```
+kubectl port-forward service/prometheus 9090:9090
+```
+
+- **URL:** [http://localhost:9090](https://www.google.com/search?q=http://localhost:9090)
+
+- **Targets Status:** [http://localhost:9090/targets](https://www.google.com/search?q=http://localhost:9090/targets) (Check here if graphs are empty)
+
+
+#### 3. Key Metrics to Watch
+
+- **Write Throughput (RPS):** Real-time writes per second per node.
+
+- **P99 Latency:** Tail latency for the 99th percentile of requests (should be <100ms).
+
+- **Raft State:** Tracks the current role of each node (0=Follower, 1=Candidate, 2=Leader).
+
+- **Replication Lag:** Detects if followers are falling behind the leader's log index.
+
 
 ## Feature Implementation Status
 
 The feature set targets distributed systems complexity comparable to senior-level engineering requirements.
 
-|**Feature**|**Technical Justification**|**Status**|
-|---|---|---|
-|**LSM Tree Storage**|High-throughput write engine (vs. B-Trees).|✅ Done|
-|**Arena Allocator**|Zero-allocation memory management.|✅ Done|
-|**WAL & Crash Recovery**|Durability via `fsync` and replay logic.|✅ Done|
-|**SSTables + Sparse Index**|Optimized disk I/O and binary search.|✅ Done|
-|**Bloom Filters**|Probabilistic structures to minimize disk reads.|✅ Done|
-|**Leveled Compaction**|Mitigation of Write/Read Amplification.|✅ Done|
-|**Raft Consensus**|Distributed consistency (CAP Theorem compliance).|✅ Done|
-|**gRPC & Protobuf**|Schema-strict internal communication.|✅ Done|
-|**Prometheus Metrics**|System observability and telemetry.|✅ Done|
+| **Feature**                        |**Technical Justification**|**Status**|
+|------------------------------------|---|---|
+| **LSM Tree Storage**               |High-throughput write engine (vs. B-Trees).|✅ Done|
+| **Arena Allocator**                |Zero-allocation memory management.|✅ Done|
+| **WAL & Crash Recovery**           |Durability via `fsync` and replay logic.|✅ Done|
+| **SSTables + Sparse Index**        |Optimized disk I/O and binary search.|✅ Done|
+| **Bloom Filters**                  |Probabilistic structures to minimize disk reads.|✅ Done|
+| **Leveled Compaction**             |Mitigation of Write/Read Amplification.|✅ Done|
+| **Raft Consensus**                 |Distributed consistency (CAP Theorem compliance).|✅ Done|
+| **gRPC & Protobuf**                |Schema-strict internal communication.|✅ Done|
+| **Prometheus Metrics and Grafana** |System observability and telemetry.|✅ Done|

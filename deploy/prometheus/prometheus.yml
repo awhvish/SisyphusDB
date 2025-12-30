@@ -4,5 +4,17 @@ global:
 scrape_configs:
   - job_name: 'raft-cluster'
     static_configs:
-      # INSIDE the Docker network, everyone is on Port 8001!
-      - targets: ['kv-0:8001', 'kv-1:8001', 'kv-2:8001']
+      # Node 0
+      - targets: ['kv-0.kv-raft:8001']
+        labels:
+          pod: 'kv-0'  # Explicitly set the label for Grafana
+
+      # Node 1
+      - targets: ['kv-1.kv-raft:8001']
+        labels:
+          pod: 'kv-1'
+
+      # Node 2
+      - targets: ['kv-2.kv-raft:8001']
+        labels:
+          pod: 'kv-2'
