@@ -37,6 +37,8 @@ The final system consists of a cluster of nodes (typically 3 or 5) functioning a
 
 ## 2. The Data Flow ("Life of a Request")
 
+<img src="put_req_flow.png" width="70%">
+
 The following narratives describe how the finished architecture handles requests, ensuring data integrity and performance.
 
 ### The Write Path (PUT)
@@ -61,6 +63,8 @@ The following narratives describe how the finished architecture handles requests
 
 
 ### The Read Path (GET)
+
+<img src="get_req_flow.png" width="50%">
 
 **Scenario:** User sends `GET key: "user:1"`
 

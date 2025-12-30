@@ -13,6 +13,8 @@ You can install locally, in dockerized containers or K8s clusters.
 
 ## System Architecture
 
+<img src="docs/high_level_architecture.png" alt="Architecture" width="30%">
+
 The architecture is composed of three distinct layers, separating network communication, consensus logic, and physical storage.
 A detailed explaination: [HERE](docs/ARCHITECHTURE.md)
 
