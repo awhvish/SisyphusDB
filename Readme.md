@@ -6,7 +6,7 @@ A distributed key-value store engineered for strong consistency and high availab
 
 - **Core Consensus (Raft):**
     
-    - Implements a custom Raft consensus engine with **batched RPCs** and term-based backtracking.
+    - Implements a custom Raft consensus engine leveraging gRPC for low-latency communication, with **batched RPCs** and term-based backtracking.
         
     - Ensures linearizability and fast leader recovery (**<550ms**) during network partitions. [Results](docs/benchmarks/recovery_log.csv)
         
