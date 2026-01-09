@@ -1,6 +1,6 @@
-# ChronosDB Implementation: From Simple Map to Distributed Storage Engine
+# SisyphusDB Implementation: From Simple Map to Distributed Storage Engine
 
-This document details the architectural evolution and implementation of ChronosDB,
+This document details the architectural evolution and implementation of SisyphusDB,
 a distributed, strongly consistent key-value store built in Go. It chronicles the journey
 from a naive in-memory prototype to a production-grade Log-Structured Merge-Tree (LSM)
 storage engine, optimized for write-heavy workloads and designed with distributed consensus
