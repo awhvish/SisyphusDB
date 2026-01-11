@@ -1,12 +1,7 @@
 # SisyphusDB Implementation: From Simple Map to Distributed Storage Engine
 
 This document details the architectural evolution and implementation of SisyphusDB,
-a distributed, strongly consistent key-value store built in Go. It chronicles the journey
-from a naive in-memory prototype to a production-grade Log-Structured Merge-Tree (LSM)
-storage engine, optimized for write-heavy workloads and designed with distributed consensus
-as a core objective. Key innovations include a custom arena allocator to mitigate Go garbage
-collection overhead, a tiered compaction strategy to control read amplification,
-and a modular architecture primed for integration with the Raft consensus protocol.
+a distributed, strongly consistent key-value store built in Go.
 This work serves as a blueprint for understanding the foundational challenges of building
 durable, high-performance storage systems.
 
