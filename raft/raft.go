@@ -27,9 +27,9 @@ type LogEntry struct {
 type Raft struct {
 	mu        sync.Mutex
 	peers     []pb.RaftServiceClient // RPC clients to talk to other nodes
-	me        int                    // this peer's index into peers[]
+	me        int
 	leaderId  int
-	applyCh   chan LogEntry // Channel to send committed data to the KV Store
+	applyCh   chan LogEntry
 	triggerCh chan struct{}
 
 	//persistent states
