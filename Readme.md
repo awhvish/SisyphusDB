@@ -1,327 +1,163 @@
-# SisyphusDB: Distributed Key-Value Store
+# SisyphusDB
 
-SisyphusDB is a high-performance distributed database designed for strong consistency and high availability. It leverages modern distributed system patterns to ensure data reliability and speed.
+<p align="center">
+  <b>A distributed key-value store built from scratch with Raft consensus</b>
+</p>
 
-A distributed key-value store engineered for strong consistency and high availability, capable of handling **3,000+ RPS** with **<55ms latency**.
+<p align="center">
+  <img src="docs/graphana_dashboard.png" width="80%" alt="Grafana Dashboard">
+</p>
 
-- **Core Consensus (Raft):**
-    
-    - Implements a custom Raft consensus engine leveraging gRPC for low-latency communication, with **batched RPCs** and term-based backtracking.
-        
-    - Ensures linearizability and fast leader recovery (**<550ms**) during network partitions. [Results](docs/benchmarks/recovery_log.csv)
-        
-- **Storage Engine (LSM-Tree):**
-    
-    - Uses **Level-Tiered SSTables** for optimized write throughput.
-        
-    - Integrated **Bloom Filters** (1% False-Positive rate) reduce disk lookups for non-existent keys by **95%**. [Industry-standard]
-        
-- **Performance Engineering:**
-    
-    - **Zero-Allocation Arena Allocator:** Replaced standard Go maps to eliminate Garbage Collection (GC) overhead in the write path.
-        
-    - **Optimization:** Reduced write operation latency by **71% (82ns → 23ns)**, verified using **pprof** profiling. [Results](https://github.com/awhvish/SisyphusDB/tree/master/docs/benchmarks/arena)
-        
-- **Infrastructure & Observability:**
-    
-    - **Kubernetes Native:** Deployed using **StatefulSets** and **PersistentVolumeClaims (PVCs)** to ensure zero data loss during restarts.
-        
-    - **Monitoring:** Full observability pipeline established with **Prometheus** and **Grafana** for tracking metrics like replication lag.
-        
-    - **Testing:** System stability and performance verified via **Vegeta** load testing.
-
-This project demonstrates the architectural evolution from a simple in-memory map to a fault-tolerant distributed system capable of handling production-grade workloads.
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#benchmarks">Benchmarks</a> •
+  <a href="#chaos-testing">Chaos Testing</a>
+</p>
 
 ---
 
-## System Architecture
+## Features
 
-```mermaid
-   flowchart TD
-    %% Global Styles
-    classDef cluster fill:#f9f9f9,stroke:#333,stroke-width:2px;
-    classDef component fill:#fff,stroke:#333,stroke-width:1px;
-    classDef storage fill:#e1f5fe,stroke:#0277bd,stroke-width:2px;
-    classDef logic fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-
-    Client([Client Request]) -->|TCP/HTTP| K8s[K8s Service / StatefulSet LB]
-
-    subgraph K8s_Cluster [Kubernetes Cluster]
-        direction TB
-        
-        %% Node Selection Logic
-        K8s -->|Route Request| NodeSelector{Check Role}
-        
-        %% Follower Logic
-        NodeSelector -->|If Follower| Follower[Raft Follower Node]
-        Follower -.->|Forward Request| Leader[Raft Leader Node]
-        
-        %% Leader Logic
-        NodeSelector -->|If Leader| Leader
-        
-        subgraph Leader_Node [Leader Node Internals]
-            direction TB
-            
-            %% Raft Consensus Layer
-            subgraph Raft_Layer [Raft Consensus Layer]
-                RLog[("Raft Log")]
-                RPC[Batched RPC Sender]
-                
-                Leader -->|Write Request| RLog
-                RLog -->|Micro-batch AppendEntries| RPC
-                RPC ==>|Replicate Log| Follower
-            end
-
-            %% Transition to Storage
-            RLog -->|Commit Msg| Channel{Go Channel}
-            Channel -->|Wait for Signal| ApplyInt[go applyInternal]
-            
-            %% Storage Engine Layer
-            subgraph Storage_Engine [LSM Storage Engine]
-                direction TB
-                
-                %% Memory Components
-                subgraph Memory [Memory / Arena Allocator]
-                    ActiveMap["Active Map (MemTable)"]
-                    FrozenMap["Frozen Map (Immutable)"]
-                    Arena[Custom Arena Allocator]
-                    
-                    Arena -.->|Backs Memory| ActiveMap
-                    Arena -.->|Backs Memory| FrozenMap
-                end
-                
-                %% Disk Components
-                subgraph Disk [Disk / SSTables]
-                    Bloom[Bloom Filters]
-                    L0[Level 0 SSTables]
-                    L1[Level 1 SSTables]
-                    L2[Level 2+ SSTables]
-                    Compaction["Compaction Worker (Max 4 Nodes/Level)"]
-                    
-                    L0 --> L1 --> L2
-                    Compaction -->|Recursive Merge| L0
-                end
-            end
-            
-            %% Write Path Connections
-            ApplyInt -->|Put/Delete/Tombstone| ActiveMap
-            ActiveMap -->|Flush| FrozenMap
-            FrozenMap -->|Flush| L0
-            
-            %% Read Path Connections
-            Leader -.->|Read Request| ActiveMap
-            ActiveMap -.->|Miss| FrozenMap
-            FrozenMap -.->|Miss| Bloom
-            Bloom -.->|Check Exists| L0
-        end
-    end
-
-    %% Legend
-    class ActiveMap,FrozenMap,Arena storage;
-    class ApplyInt,Compaction logic;
-```
-
-The architecture is composed of three distinct layers, separating network communication, consensus logic, and physical storage.
-A detailed explaination: [HERE](docs/ARCHITECHTURE.md)
-
-
-## Performance Engineering & Benchmarks
-
-The core objective of SisyphusDB is to minimize write latency and maximize throughput through low-level memory optimizations and asynchronous I/O strategies.
-
-### 1. Memory Optimization: Custom Arena Allocator
-
-To address the garbage collection (GC) overhead inherent in Go's standard map implementation, a custom **Bump-Pointer Arena Allocator** was engineered. By replacing standard hashing and bucket lookups with direct memory offset calculations, the system achieves O(1) storage time with zero allocations per operation in the hot path.
-
-### Benchmark Results
-|**Implementation**| **Latency (ns/op)** |**Throughput (Ops/sec)**| **Allocations/Op** |**Memory/Op**|
-|---|---------------------|---|-------------------|---|
-|**Standard Map (Baseline)**| 82.21 ns            |~12.16 M| 0                 |176 B|
-|**Arena Allocator**| **23.17 ns**        |**~24.86 M**| **0**             |**64 B**|
-|**Improvement**| **71.1% Faster**    |**104.4% Increase**| **50% Reduction** |**63.6% Reduction**|
-
-### Verification
-**Before (Standard Map):** High CPU time spent in `runtime.mallocgc` (GC Pauses). [GC Pressure](docs/benchmarks/arena/graph_baseline.png)
-
-**After (Arena):** GC overhead eliminated; CPU spends time only on ingestion. [Arena Optimization](docs/benchmarks/arena/graph_arena.png)
-
-*Reproducible via `go test -bench=. docs/benchmarks/arena/benchmark_test.go`*
-
-_Results verified on Intel Core i5-12450H._
-
-### 2. Throughput Scaling: The Journey to 3,000 RPS
-Through iterative engineering and bottleneck analysis, SisyphusDB achieved a **30x increase in write throughput**, scaling from a baseline of 100 RPS to a stable **2,960 RPS**.
-
-### 📉 Optimization Phases
-
-The system evolved through three distinct architectural phases to overcome physical hardware and OS limitations:
-
-* **Phase 1: Baseline (100 RPS)**
-    * **Bottleneck:** Synchronous Disk I/O.
-    * **Context:** The initial implementation used "Safety First" persistence, calling `fsync()` immediately on every Raft log entry. Throughput was physically capped by the disk's rotational latency.
-
-* **Phase 2: Asynchronous Persistence**
-    * **Bottleneck:** Ephemeral Port Exhaustion.
-    * **Context:** Persistence was moved to background workers. While this removed the disk bottleneck, the naive network implementation opened a new connection for every replication request, causing `dial tcp: address already in use` errors.
-
-* **Phase 3: Final Optimization (3,000 RPS)**
-    * **Solution:** Implemented **Adaptive Micro-Batching** (aggregating writes into 50ms windows) and **TCP Connection Pooling** (Keep-Alive).
-    * **Result:** Reduced network packet count by 95% and eliminated TCP handshake overhead, stabilizing the system at extreme loads.
+- **Raft Consensus** — Leader election, log replication, and automatic failover with <550ms recovery
+- **LSM-Tree Storage** — LevelDB-style tiered compaction with Bloom filters for 95% fewer disk lookups
+- **3,000+ Write RPS** — Achieved through batched RPCs, arena-based memory pooling, and async persistence
+- **Kubernetes Native** — StatefulSet deployment with persistent volumes and Prometheus/Grafana monitoring
 
 ---
 
-#### 📊 Load Test Results
+## Quick Start
 
-Benchmarks were conducted using **Vegeta** running inside the Kubernetes cluster to bypass ingress bottlenecks.
-
-[Benchmark Results](https://github.com/awhvish/SisyphusDB/tree/master/docs/benchmarks/vegeta)
-
-**1. Peak Performance (Stress Test)**
-Pushing the system to its limits with a target of **3,000 Write RPS**:
-
-| Target Rate | Actual Throughput | Success Rate | Mean Latency | P99 Latency |
-| :--- | :--- | :--- | :--- | :--- |
-| **2,500 RPS** | **2,481 RPS** | 100.00% | 29.94ms | 51.43ms |
-| **3,000 RPS** | **2,960 RPS** | 100.00% | 53.64ms | 90.32ms |
-
-> **Analysis:** Even at ~3,000 writes/second, the system maintains sub-100ms tail latency (P99), proving the efficacy of the non-blocking WAL architecture.
-
-**2. Latency Breakdown (Leader vs. Follower)**
-At a sustained load of 2,000 RPS, we analyzed the cost of internal request forwarding. Writes sent to **Followers** incur additional latency as they must be proxied to the Leader.
-
-| Metric | Leader Node (Direct Write) | Follower Node (Proxy Overhead) |
-| :--- | :--- | :--- |
-| **Throughput** | **1,996 RPS** | 1,915 RPS |
-| **Mean Latency** | **29.49ms** | 82.07ms |
-| **P99 Latency** | **55.55ms** | 328.04ms |
-
-> **Note:** The higher P99 latency on Follower nodes validates the internal "Smart Routing" mechanism. It proves that followers correctly buffered and forwarded traffic to the leader under pressure rather than dropping requests.
-
-**To Reproduce:**
+### Local (Docker Compose)
 ```bash
-# Run from inside the cluster
-echo "GET [http://kv-0.kv-raft:8001/put?key=load&val=test](http://kv-0.kv-raft:8001/put?key=load&val=test)" | vegeta attack -duration=5s -rate=3000 | vegeta report
-````
+docker-compose up
+# Access: http://localhost:8001/put?key=hello&val=world
+# Grafana: http://localhost:3000 (admin/admin)
+```
+
+### Kubernetes
+```bash
+kubectl apply -f deploy/k8s/
+```
+
+See [INSTALL.md](INSTALL.md) for detailed setup and [EKS-INSTALL.md](EKS-INSTALL.md) for AWS deployment.
+
 ---
 
+## Architecture
 
-## Reliability & Chaos Engineering
+<p align="center">
+  <img src="docs/high_level_architecture.png" width="70%" alt="Architecture">
+</p>
 
-Fault tolerance was validated via Chaos Testing on a 3-node Kubernetes cluster to verify **sub-second leader election** and **Linearizability** under failure conditions.
+The system consists of three layers:
 
-### Experiment: Leader Failure during Write Load
+| Layer | Components |
+|-------|------------|
+| **Consensus** | Raft leader election, log replication via gRPC, term-based conflict resolution |
+| **Storage** | Write-ahead log, MemTable with arena allocator, SSTable compaction |
+| **API** | HTTP interface with automatic leader forwarding |
 
-Scenario: A client sends continuous Write (PUT) requests while the Leader node (kv-0) is forcibly deleted.
-
-Constraint: No split-brain writes allowed; the system must failover automatically.
-
-**Log Analysis Results:**
-
-Plaintext
-
-```
-1767014613776,UP    System Healthy
-1767014613925,DOWN  Leader Killed (Election Starts)
-1767014614062,DOWN  Writes Rejected (Proxy Failed)
-1767014614474,UP    New Leader Elected (Write Accepted)
-```
-[Recovery Benchmark Results](docs/benchmarks/recovery_log.csv)
-
-To Reproduce the benchmarks, refer to [INSTALL.md](INSTALL.md)
-
-**Recovery Metrics:**
-
-- **Total Recovery Time:** 549ms
-
-- **Consistency:** Zero data loss. Follower nodes correctly rejected writes during the election window, preserving strong consistency.
-
+See [docs/ARCHITECHTURE.md](docs/ARCHITECHTURE.md) for detailed documentation.
 
 ---
-###  Observability (Prometheus & Grafana)
 
-<img src="docs/graphana_dashboard.png" width="80%">
+## Benchmarks
 
-SisyphusDB includes a production-grade monitoring stack to visualize throughput, latency, and Raft consensus states in real-time.
+### Write Performance
 
-#### 1. Deploy the Monitoring Stack
+| Metric | Value |
+|--------|-------|
+| Peak Throughput | **2,960 RPS** |
+| Mean Latency | 53.64ms |
+| P99 Latency | 90.32ms |
+| Success Rate | 100% |
 
-The monitoring configuration is decoupled from the container images using Kubernetes ConfigMaps. You must create these configurations before deploying the pods.
+### Memory Optimization
 
-**Step A: Upload Configurations** Run these commands from the project root to load the Prometheus and Grafana configs into the cluster:
+Custom arena allocator reduced write latency by **71%** (82ns → 23ns) by eliminating GC pressure.
 
-Bash
+| Implementation | Latency | Allocations/Op |
+|----------------|---------|----------------|
+| Standard Map | 82.21 ns | 0 B |
+| Arena Allocator | **23.17 ns** | **64 B** |
 
-```
-# 1. Prometheus Config (Service Discovery & Relabeling)
-kubectl create configmap prometheus-config --from-file=deploy/prometheus/prometheus.yml
+**Benchmarks:** [docs/benchmarks/](docs/benchmarks/) | **Arena profiling:** [docs/benchmarks/arena/](docs/benchmarks/arena/)
 
-# 2. Grafana Datasources (Connects to Prometheus)
-kubectl create configmap grafana-datasources --from-file=deploy/grafana/provisioning/datasources/datasource.yml
+---
 
-# 3. Grafana Dashboard Provider (Auto-loads JSONs)
-kubectl create configmap grafana-provisioning --from-file=deploy/grafana/provisioning/dashboards/dashboard.yml
+## Chaos Testing
 
-# 4. The Dashboard JSON (The actual UI layout)
-kubectl create configmap grafana-dashboards --from-file=deploy/grafana/dashboards/raft-dashboard.json
-```
+Chaos tests validate Raft's correctness guarantees under failure conditions.
 
-**Step B: Apply Services & RBAC** Deploy the Prometheus/Grafana pods and grant them permission to scrape Kubernetes pod metrics.
+### Test 1: Leader Failover
 
-Bash
-
-```
-# Deploy RBAC permissions (Critical for Service Discovery)
-kubectl apply -f deploy/k8s/5-rbac.yaml
-
-# Deploy Prometheus and Grafana containers
-kubectl apply -f deploy/k8s/4-monitoring.yaml
-```
-
-#### 2. Access the Dashboards
-
-Since the monitoring services run inside the cluster, you must forward the ports to your local machine to view them.
-
-**View Grafana (Dashboards):**
-
-Bash
+Kills the leader mid-write and verifies no acknowledged data is lost.
 
 ```
-kubectl port-forward service/grafana 3000:3000
+[Step 1] Start 3-node cluster
+[Step 2] Write 50 keys
+[Step 3] SIGKILL the leader
+[Step 4] Wait for new leader election (<550ms)
+[Step 5] Write 50 more keys
+[Step 6] Verify all 100 keys readable
 ```
 
-- **URL:** [http://localhost:3000](https://www.google.com/search?q=http://localhost:3000)
+**Result:** Zero data loss. All acknowledged writes survive leader failures.
 
-- **Credentials:** `admin` / `admin`
+### Test 2: Split-Brain Prevention
 
-- _Note: The "Raft Cluster Metrics" dashboard will be pre-loaded under the "Dashboards" tab._
+Sends writes during election and verifies only one node accepts them.
 
-
-**View Prometheus (Raw Metrics & Targets):**
-
-Bash
-
-```
-kubectl port-forward service/prometheus 9090:9090
+```bash
+# Run chaos tests
+cd tests/chaos
+go test -v -timeout 120s
 ```
 
-- **URL:** [http://localhost:9090](https://www.google.com/search?q=http://localhost:9090)
+See [tests/chaos/README.md](tests/chaos/README.md) for details.
 
-- **Targets Status:** [http://localhost:9090/targets](https://www.google.com/search?q=http://localhost:9090/targets) (Check here if graphs are empty)
+---
 
+## Observability
 
-#### 3. Key Metrics to Watch
+Built-in Prometheus metrics and Grafana dashboards:
 
-- **Write Throughput (RPS):** Real-time writes per second per node.
+- Write throughput (RPS per node)
+- P99 latency
+- Raft leader state
+- Replication lag
 
-- **P99 Latency:** Tail latency for the 99th percentile of requests (should be <100ms).
+```bash
+# Access dashboards
+kubectl port-forward svc/grafana 3000:3000
+# Open http://localhost:3000 (admin/admin)
+```
 
-- **Raft State:** Tracks the current role of each node (0=Follower, 1=Candidate, 2=Leader).
+---
 
-- **Replication Lag:** Detects if followers are falling behind the leader's log index.
+## Project Structure
 
-## INSTALL
-You can install locally, in dockerized containers or K8s clusters.
-[A detailed guide](/INSTALL.md)
+```
+├── cmd/server/       # Entry point
+├── raft/             # Consensus implementation
+├── kv/               # Storage engine (LSM-tree)
+├── pkg/
+│   ├── arena/        # Zero-allocation memory pool
+│   ├── wal/          # Write-ahead log
+│   └── bloom/        # Bloom filter
+├── sstable/          # Sorted string tables
+├── tests/chaos/      # Chaos tests
+├── deploy/
+│   ├── k8s/          # Kubernetes manifests
+│   ├── prometheus/   # Monitoring config
+│   └── grafana/      # Dashboards
+└── docs/             # Architecture & benchmarks
+```
 
+---
 
+## License
 
+MIT
