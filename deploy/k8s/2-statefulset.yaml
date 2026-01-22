@@ -13,9 +13,11 @@ spec:
       labels:
         app: SisyphusDB
     spec:
+      imagePullSecrets:
+        - name: ecr-secret
       containers:
         - name: kv-server
-          image: sisyphusdb:v2
+          image: 967519196048.dkr.ecr.ap-south-1.amazonaws.com/sisyphusdb:production
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5001
@@ -42,16 +44,19 @@ spec:
 
   volumeClaimTemplates:
   - metadata:
-                name: wal-storage
+      name: wal-storage
     spec:
-                accessModes: [ "ReadWriteOnce" ]
-                resources:
-                  requests:
-                    storage: 100Mi
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: gp2
+      resources:
+        requests:
+          storage: 100Mi
   - metadata:
-                name: data-storage
+      name: data-storage
     spec:
-                accessModes: [ "ReadWriteOnce" ]
-                resources:
-                  requests:
-                    storage: 100Mi
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: gp2
+      resources:
+        requests:
+          storage: 100Mi
+
